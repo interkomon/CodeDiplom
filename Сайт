@@ -1,0 +1,422 @@
+Report_HTWP3
+    public class AccountController : Controller
+    {
+        private readonly Htwp3DbContext _context;
+
+        public AccountController(Htwp3DbContext context)
+        {
+            _context = context;
+        }
+
+        [HttpGet]
+        public IActionResult Login() => View();
+
+        [HttpPost]
+        public async Task<IActionResult> Login(LoginViewModel model)
+        {
+            if (!ModelState.IsValid) return View(model);
+
+            var user = _context.Users.Include(u => u.Role)
+                .FirstOrDefault(uu => uu.Username == model.Username);
+
+            if (user == null || user.IsBlocked == true)
+            {
+                ModelState.AddModelError("", "Неверное имя пользователя или пользователь заблокирован");
+                return View(model);
+            }
+
+            if (!VerifyPassword(model.Password, user.Password, user.Salt))
+            {
+                ModelState.AddModelError("", "Неверный пароль");
+                return View(model);
+            }
+
+            var claims = new List<Claim>
+        {
+            new Claim(ClaimTypes.Name, user.Name),
+            new Claim("FullName", $"{user.Surname} {user.Name}"),
+            new Claim(ClaimTypes.Role, user.Role?.Name ?? "Unknown")
+        };
+
+            var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
+            var principal = new ClaimsPrincipal(identity);
+            await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal);
+
+            return RedirectToPage("/Index");
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> Logout()
+        {
+            await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+            return RedirectToAction("Login");
+        }
+
+        private bool VerifyPassword(string inputPassword, string? storedHash, string? salt)
+        {
+
+            using var sha256 = SHA256.Create();
+            var saltedInput = salt + inputPassword;
+            var hash = Convert.ToBase64String(sha256.ComputeHash(Encoding.UTF8.GetBytes(saltedInput)));
+            return hash == storedHash;
+        }
+    }
+}
+
+@page
+@model ReportHTWP_3.Pages.IndexModel
+@{
+    ViewData["Title"] = "Отчёт по испытаниям";
+}
+
+<link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
+
+<style>
+    html {
+        font-size: 14px;
+    }
+
+    @@media (min-width:768px) {
+        html {
+            font-size: 16px;
+        }
+    }
+
+    .sticky-header {
+        position: sticky;
+        top: 5px;
+        z-index: 999;
+        background: #ffffffcc;
+        margin-bottom: 0;
+        padding-bottom: 0;
+    }
+
+    .table-fixed {
+        table-layout: fixed;
+        width: 100%;
+    }
+
+    body {
+        margin-bottom: 60px;
+    }
+</style>
+
+<div class="container-fluid mt-3">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <span>Выполнен вход как: <strong>@Model.UserTitle</strong></span>
+        <form method="post" asp-page-handler="Logout" class="m-0">
+            @Html.AntiForgeryToken()
+            <button type="submit" class="btn btn-outline-danger btn-sm">Выйти</button>
+        </form>
+    </div>
+
+    <div class="sticky-header border-bottom">
+        <form method="get" class="row g-2 align-items-end">
+            <div class="col-auto">
+                <label class="form-label small">Дата от:</label>
+                <input asp-for="FilterStartDate" type="date" class="form-control form-control-sm" />
+            </div>
+            <div class="col-auto">
+                <label class="form-label small">Дата до:</label>
+                <input asp-for="FilterEndDate" type="date" class="form-control form-control-sm" />
+            </div>
+            <div class="col-auto align-self-end">
+                <button type="submit" class="btn btn-primary btn-sm">Применить</button>
+            </div>
+            <div class="col ms-auto align-self-end">
+                <button type="button"
+                        class="btn btn-success btn-sm float-end"
+                        onclick="openExportModal()">
+                    Сохранить&nbsp;отчёт
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <div class="table-responsive mt-2">
+        <table class="table table-bordered table-sm align-middle table-fixed" id="reportTable">
+            <thead class="table-light text-center">
+                <tr>
+                    <th style="width:3%">#</th>
+                    <th style="width:12%">Серийный номер гребенки</th>
+                    <th style="width:10%">Тип</th>
+                    <th style="width:12%">Дата</th>
+                    <th style="width:12%">Оператор</th>
+                    <th style="width:12%">Программа</th>
+                    <th style="width:8%">Результат</th>
+                    <th style="width:10%">Тип&nbsp;сенсора</th>
+                    <th style="width:12%">Серийный номер сенсора</th>
+                    <th style="width:9%">Действие</th>
+                </tr>
+                <tr>
+                    <th></th>
+                    @for (var c = 1; c <= 8; c++)
+                    {
+                        <th>
+                            <input type="text"
+                                   class="form-control form-control-sm filter"
+                                   data-col="@c"
+                                   placeholder="Фильтр" />
+                        </th>
+                    }
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @for (int i = 0; i < Model.ReportData.Count; i++)
+                {
+                    var r = Model.ReportData[i];
+                    <tr data-id="@r.SensorTestingId">
+                        <td class="text-center">@(@i + 1)</td>
+                        <td>@r.CartridgeCode</td>
+                        <td>@r.CartridgeTypeName</td>
+                        <td>@r.Date.ToString("yyyy-MM-dd HH:mm")</td>
+                        <td>@r.OperatorName</td>
+                        <td>@r.ProgramName</td>
+                        <td class="text-center">
+                            @Html.Raw(
+                                     r.Result
+                                     ? "<span class='badge bg-success'>OK</span>"
+                                     : "<span class='badge bg-danger'>BAD</span>"
+                                     )
+                        </td>
+                        <td>@r.TypeName</td>
+                        <td>@r.SerialNumber</td>
+                        <td class="text-center">
+                            <button type="button"
+                                    class="btn btn-secondary btn-sm"
+                                    onclick="toggleDetails(@r.SensorTestingId, event)">
+                                Результаты
+                            </button>
+                        </td>
+                    </tr>
+                    <tr id="detail-@r.SensorTestingId" style="display:none">
+                        <td colspan="10" class="p-2">
+                            <div id="slot-@r.SensorTestingId" class="small fst-italic">
+                                Загрузка данных…
+                            </div>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="modal fade" id="exportModal"
+     tabindex="-1" aria-labelledby="exportModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title fw-semibold" id="exportModalLabel">
+                    Куда&nbsp;сохранить&nbsp;отчёт?
+                </h5>
+                <button type="button"
+                        class="btn-close"
+                        data-bs-dismiss="modal"
+                        aria-label="Закрыть"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2">
+                    <div class="col-6 d-grid">
+                        <form method="post" asp-page-handler="ExportToExcel" class="m-0">
+                            @Html.AntiForgeryToken()
+                            <input type="hidden" name="Visible" id="visibleExcel" />
+                            <button type="submit" class="btn btn-primary w-100">Excel</button>
+                        </form>
+                    </div>
+                    <div class="col-6 d-grid">
+                        <form method="post" asp-page-handler="ExportToPdf" class="m-0">
+                            @Html.AntiForgeryToken()
+                            <input type="hidden" name="Visible" id="visiblePdf" />
+                            <button type="submit" class="btn btn-danger w-100">PDF</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="~/lib/jquery/dist/jquery.min.js"></script>
+<script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+    document.addEventListener("DOMContentLoaded", () => {
+        document.querySelectorAll(".filter")
+            .forEach(f => f.addEventListener("input", filterTable));
+        filterTable();
+    });
+
+    function filterTable() {
+        const filters = [...document.querySelectorAll(".filter")];
+        document.querySelectorAll("#reportTable tbody tr[data-id]")
+            .forEach(row => {
+                let visible = true;
+                filters.forEach(inp => {
+                    const col = +inp.dataset.col;
+                    const val = inp.value.trim().toLowerCase();
+                    if (val) {
+                        const text = (row.cells[col]?.innerText || "").toLowerCase();
+                        if (!text.includes(val)) visible = false;
+                    }
+                });
+                row.style.display = visible ? "" : "none";
+                const detail = document.getElementById("detail-" + row.dataset.id);
+                if (detail) detail.style.display = visible ? detail.style.display : "none";
+            });
+    }
+
+    function toggleDetails(id, e) {
+        if (e) e.preventDefault();
+        const row = document.getElementById("detail-" + id);
+        if (!row) return;
+        const show = row.style.display === "none" || row.style.display === "";
+        row.style.display = show ? "" : "none";
+        if (!show) return;
+        if (row.dataset.loaded) return;
+        const url = `${window.location.pathname}?handler=Details&id=${id}`;
+        fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } })
+            .then(r => r.text())
+            .then(html => {
+                document.getElementById("slot-" + id).innerHTML = html;
+                row.dataset.loaded = "1";
+            });
+    }
+
+    function openExportModal() {
+        const ids = Array.from(
+            document.querySelectorAll("#reportTable tbody tr[data-id]")
+        )
+            .filter(tr => tr.offsetParent !== null)
+            .map(tr => tr.dataset.id);
+        document.getElementById("visibleExcel").value = ids.join(",");
+        document.getElementById("visiblePdf").value = ids.join(",");
+        new bootstrap.Modal(document.getElementById("exportModal")).show();
+    }
+</script>
+
+
+ public void OnGet()
+ {
+     UserTitle = User.FindFirst("FullName")?.Value ?? User.Identity.Name;
+     LoadDataInMemory();
+   
+ }
+
+
+ public IActionResult OnPostExportToExcel()
+ {
+     LoadDataInMemory();
+     ApplyDateFilter();
+     ApplyVisibleFilter();
+
+     ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+     using var pkg = new ExcelPackage();
+     var ws = pkg.Workbook.Worksheets.Add("Report");
+
+     string[] header =
+     {
+         "№","Сер. № гребёнки","Тип","Дата","Оператор",
+         "Программа","Результат","Тип сенсора","Сер. № сенсора"
+     };
+     for (int c = 0; c < header.Length; c++) ws.Cells[1, c + 1].Value = header[c];
+     using (var rng = ws.Cells[1, 1, 1, header.Length]) rng.Style.Font.Bold = true;
+
+     for (int i = 0; i < ReportData.Count; i++)
+     {
+         var r = ReportData[i]; int row = i + 2;
+         ws.Cells[row, 1].Value = i + 1;
+         ws.Cells[row, 2].Value = r.CartridgeCode;
+         ws.Cells[row, 3].Value = r.CartridgeTypeName;
+         ws.Cells[row, 4].Value = r.Date.ToString("yyyy-MM-dd HH:mm");
+         ws.Cells[row, 5].Value = r.OperatorName;
+         ws.Cells[row, 6].Value = r.ProgramName;
+         ws.Cells[row, 7].Value = r.Result ? "OK" : "BAD";
+         ws.Cells[row, 8].Value = r.TypeName;
+         ws.Cells[row, 9].Value = r.SerialNumber;
+     }
+
+     ws.Cells.AutoFitColumns();
+
+     var stream = new MemoryStream();
+     pkg.SaveAs(stream);
+     stream.Position = 0;
+     return File(stream.ToArray(),
+                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                 $"Report_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx");
+ }
+
+
+ public IActionResult OnPostExportToPdf()
+ {
+     LoadDataInMemory();
+     ApplyDateFilter();
+     ApplyVisibleFilter();
+
+     using var ms = new MemoryStream();
+     using var writer = new PdfWriter(ms);
+     using var pdf = new PdfDocument(writer);
+     using var doc = new Document(pdf, PageSize.A4.Rotate());
+
+   
+     var fontPath = System.IO.Path.Combine(_env.WebRootPath, "fonts", "arialmt.ttf");
+     var font = PdfFontFactory.CreateFont(fontPath, PdfEncodings.IDENTITY_H);
+     doc.SetFont(font);
+
+     doc.Add(new Paragraph("Отчёт по испытаниям сенсоров")
+              .SetFontSize(16)
+              .SetTextAlignment(iText.Layout.Properties.TextAlignment.CENTER)
+              .SetMarginBottom(10));
+
+     var table = new Table(9).UseAllAvailableWidth();
+     new[]
+     {
+         "№","Сер. № гребёнки","Тип","Дата","Оператор",
+         "Программа","Результат","Тип сенсора","Сер. № сенсора"
+     }.ToList().ForEach(h => table.AddHeaderCell(h));
+
+     for (int i = 0; i < ReportData.Count; i++)
+     {
+         var r = ReportData[i];
+         table.AddCell((i + 1).ToString());
+         table.AddCell(r.CartridgeCode);
+         table.AddCell(r.CartridgeTypeName);
+         table.AddCell(r.Date.ToString("yyyy-MM-dd HH:mm"));
+         table.AddCell(r.OperatorName);
+         table.AddCell(r.ProgramName);
+         table.AddCell(r.Result ? "OK" : "BAD");
+         table.AddCell(r.TypeName);
+         table.AddCell(r.SerialNumber);
+     }
+
+     doc.Add(table); doc.Close();
+
+     return File(ms.ToArray(),
+                 "application/pdf",
+                 $"Report_{DateTime.Now:yyyyMMdd_HHmmss}.pdf");
+ }
+
+ 
+ public async Task<IActionResult> OnPostLogoutAsync()
+ {
+     await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+     return RedirectToPage("/Account/Login");
+ }
+
+
+ private void ApplyDateFilter()
+ {
+     if (FilterStartDate.HasValue)
+         ReportData = ReportData.Where(r => r.Date >= FilterStartDate.Value).ToList();
+     if (FilterEndDate.HasValue)
+         ReportData = ReportData.Where(r => r.Date <= FilterEndDate.Value).ToList();
+ }
+
+ private void ApplyVisibleFilter()
+ {
+     if (string.IsNullOrWhiteSpace(Visible)) return;
+     var ids = Visible.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                      .Select(int.Parse).ToHashSet();
+     ReportData = ReportData.Where(r => ids.Contains(r.SensorTestingId)).ToList();
+ }
