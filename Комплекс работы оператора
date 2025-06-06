@@ -1,0 +1,812 @@
+ChoiceWorkDialog
+ public partial class ChoiceWorkDialog : UserControl
+ {
+     public ChoiceWorkDialog(string name)
+     {
+         InitializeComponent();
+         nameTextBlock.Text = $"{name},";
+     }
+
+     private void OpressingButton(object s, RoutedEventArgs e) =>
+         DialogHost.CloseDialogCommand.Execute(DialogType.Crimping, this);
+
+     private void LoadCamera_Button(object s, RoutedEventArgs e) =>
+         DialogHost.CloseDialogCommand.Execute(DialogType.LoadToCamera, this);
+
+     private void Cancel_Click(object s, RoutedEventArgs e)
+     {
+         DialogHost.CloseDialogCommand.Execute(null, this);
+     }
+ }
+Crimping_UserControl
+    public partial class Crimping_UserControl
+    {
+        private readonly CartridgeScanViewModel _viewModel;
+
+        // Для показа ошибок
+        public SnackbarMessageQueue MessageQueue { get; }
+
+
+        public Crimping_UserControl()
+        {
+
+            InitializeComponent();
+
+            _viewModel = new CartridgeScanViewModel();
+            DataContext = _viewModel;
+
+            MessageQueue = new SnackbarMessageQueue(TimeSpan.FromSeconds(3));
+            ErrorSnackBar.MessageQueue = MessageQueue;
+            _viewModel.MessageQueue = MessageQueue;
+
+
+        }      
+           
+        private async void Exit_Click(object sender, RoutedEventArgs e)
+        {
+            DialogHost.CloseDialogCommand.Execute(null, null);
+
+
+            /*string fullText = "С возвращением";
+            var choicework = new ChoiceWorkDialog(fullText);
+            var choice = await DialogHost.ShowDialog(choicework);*/
+        }
+
+        private void UserControl_Loaded(object sender, RoutedEventArgs e)
+        {
+            COMScanner.InitializeScanner(_viewModel, "COM3");
+        }
+    }
+}
+CartridgeScanViewModel
+
+        private const int TotalCombs = 64;
+        private const int SensorsPerComb = 8;
+
+        private readonly Htwp3DbContext _db = new Htwp3DbContext();
+
+        public ObservableCollection<CartridgeSensor> CartridgeSensors { get; } = new();
+
+        // команды
+        public ICommand FinishCommand { get; }
+        public ICommand EditCommand { get; }
+        public ICommand DeleteCommand { get; }
+
+        // для ошибок/уведомлений
+        public SnackbarMessageQueue? MessageQueue { get; set; }
+
+        // текущее сканирование
+        private CartridgeSensor? _editingSensor;
+        private CartridgeSensor? _currentSensor;
+        private int _currentCombIndex = 0;
+        private int _currentSensorIndex = 0;
+        private bool _awaitingHermeticCheck = false;
+
+        private string _currentCartridgeCode = "";
+        public string CurrentCartridgeCode
+        {
+            get => _currentCartridgeCode;
+            set => SetField(ref _currentCartridgeCode, value);
+        }
+
+        private string _currentStepMessage = "";
+        public string CurrentStepMessage
+        {
+            get => _currentStepMessage;
+            set => SetField(ref _currentStepMessage, value);
+        }
+
+        private bool _isScanningInProgress;
+        public bool IsScanningInProgress
+        {
+            get => _isScanningInProgress;
+            set
+            {
+                if(_isScanningInProgress != value)
+                {
+                    _isScanningInProgress = value;
+                    OnPropertyChanged();
+                }
+            }
+        }
+
+        public CartridgeScanViewModel()
+        {
+            FinishCommand = new RelayCommand(Finish);
+            EditCommand = new RelayCommand1<CartridgeSensor>(StartEdit);
+            DeleteCommand = new RelayCommand1<CartridgeSensor>(Delete);
+
+           
+            PrepareNextComb();
+        }
+
+        private void PrepareNextComb()
+        {
+            if (_currentCombIndex >= TotalCombs)
+            {
+                CurrentStepMessage = "Все гребёнки отсканированы. Нажмите 'Завершить'";
+            }
+            else
+            {
+                CurrentStepMessage = $"Сканируйте гребёнку";
+                //CurrentStepMessage = $"Сканируйте гребёнку {_currentCombIndex + 1} из {TotalCombs}";
+            }
+        }
+
+        public void DataScanned(string code)
+        {
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                // 1) ОБЩАЯ ПРОВЕРКА на флаг IsLoaded в базе:
+                var existsInDb = _db.CartridgeSensors
+                                   .Include("Cartridge")
+                                   .FirstOrDefault(x => x.Cartridge.CartridgeCode == code);
+                if (existsInDb != null && existsInDb.IsLoaded == false)
+                {
+                    MessageQueue?.Enqueue($"Гребёнку {code} отсканировать нельзя. Она еще не загружена в камеру.");
+                    return;
+                }
+
+                // 2) Если редактор активна — спец. поток
+                if (_editingSensor != null)
+                {
+                    HandleEditingScan(code);
+                    return;
+                }
+                
+                // 3) Обычное добавление новой записи
+                HandleNewScan(code);
+            });
+        }
+
+        private void HandleNewScan(string code)
+        {
+            // 3.1: первый штрихкод — гребёнка
+            if (string.IsNullOrEmpty(CurrentCartridgeCode))
+            {
+                if (!IsUniqueCombCode(code, null))
+                {
+                    MessageQueue?.Enqueue($"Гребёнка {code} уже есть.");
+                    return;
+                }
+                if(!IsCodeNotUsedAsSensor(code))
+                {
+                    MessageQueue?.Enqueue($"Гребенка {code} уже используется как сенсор.");
+                    return;
+                }
+
+                CurrentCartridgeCode = code;
+                _currentSensor = new CartridgeSensor
+                {
+                    AddedDate = DateTime.Now,
+                    StatusGeremetic = false,
+                    IsLoaded = false,
+                    Cartridge = new Cartridge { CartridgeCode = code }
+                };
+                IsScanningInProgress = true;
+                CartridgeSensors.Add(_currentSensor);
+                _currentSensorIndex = 0;
+                CurrentStepMessage = $"Отсканируйте сенсор 1 для гребёнки {code}";
+                return;
+            }
+
+            // 3.2: сканирование сенсоров
+            if (!_awaitingHermeticCheck && _currentSensorIndex < SensorsPerComb)
+            {
+                if (!IsUniqueSensorCode(code, null))
+                {
+                    MessageQueue?.Enqueue($"Сенсор {code} уже существует.");
+                    return;
+                }
+                if(!IsCodeNotUsedAsComb(code))
+                {
+                    MessageQueue?.Enqueue($"Сенсор {code} уже используется как гребенка.");
+                    return;
+                }
+
+                SetSensorCode(_currentSensorIndex, code, _currentSensor!);
+                _currentSensorIndex++;
+
+                if (_currentSensorIndex < SensorsPerComb)
+                {
+                    CurrentStepMessage = $"Отсканируйте сенсор {_currentSensorIndex + 1} для гребёнки {CurrentCartridgeCode}";
+                }
+                else
+                {
+                    _awaitingHermeticCheck = true;
+                    CurrentStepMessage = $"Все сенсоры отсканированы. Проверьте герметичность и отсканируйте гребёнку {CurrentCartridgeCode} снова";
+                }
+                return;
+            }
+
+            // 3.3: проверка герметичности (скан гребёнки ещё раз)
+            if (_awaitingHermeticCheck && code == CurrentCartridgeCode)
+            {
+                _currentSensor!.StatusGeremetic = true;
+                CurrentStepMessage = $"Герметичность гребёнки {code} подтверждена.";
+                _currentCombIndex++;
+                ResetScanState();
+                IsScanningInProgress = false;
+            }
+            else if (_awaitingHermeticCheck)
+            {
+                MessageQueue?.Enqueue($"Неверная гребёнка. Снова сканируйте {CurrentCartridgeCode}");
+            }
+        }
+
+        private void HandleEditingScan(string code)
+        {
+            // 1) первый штрихкод при редактировании – новая гребёнка
+            if (string.IsNullOrEmpty(CurrentCartridgeCode))
+            {
+                if (!IsUniqueCombCode(code, _editingSensor))
+                {
+                    MessageQueue?.Enqueue($"Гребёнка {code} уже есть.");
+                    return;
+                }
+                if (!IsCodeNotUsedAsSensor(code))
+                {
+                    MessageQueue?.Enqueue($"Гребенка {code} уже используется как сенсор.");
+                    return;
+                }
+
+                // обновляем
+                _editingSensor!.Cartridge.CartridgeCode = code;
+                CurrentCartridgeCode = code;
+                ClearSensorCodes(_editingSensor);
+                _currentSensorIndex = 0;
+                _awaitingHermeticCheck = false;
+                CurrentStepMessage = $"(Редактирование) Отсканируйте сенсор 1 для гребёнки {code}";
+                IsScanningInProgress = true;
+                return;
+            }
+
+            // 2) сенсоры
+            if (!_awaitingHermeticCheck && _currentSensorIndex < SensorsPerComb)
+            {
+                if (!IsUniqueSensorCode(code, _editingSensor))
+                {
+                    MessageQueue?.Enqueue($"Сенсор {code} уже существует.");
+                    return;
+                }
+                if (!IsCodeNotUsedAsComb(code))
+                {
+                    MessageQueue?.Enqueue($"Сенсор {code} уже используется как гребенка.");
+                    return;
+                }
+
+                SetSensorCode(_currentSensorIndex, code, _editingSensor!);
+                _currentSensorIndex++;
+
+                if (_currentSensorIndex < SensorsPerComb)
+                {
+                    CurrentStepMessage = $"(Ред.) Отсканируйте сенсор {_currentSensorIndex + 1} для гребёнки {CurrentCartridgeCode}";
+                }
+                else
+                {
+                    _awaitingHermeticCheck = true;
+                    CurrentStepMessage = $"(Ред.) Проверьте герметичность и отсканируйте гребёнку {CurrentCartridgeCode} снова";
+                    
+                }
+                return;
+            }
+
+            // 3) герметичность
+            if (_awaitingHermeticCheck && code == CurrentCartridgeCode)
+            {
+                _editingSensor!.StatusGeremetic = true;
+                _db.SaveChanges();               // сразу сохраняем изменения
+                MessageQueue?.Enqueue("Редактирование сохранено");
+                IsScanningInProgress = false;
+                ResetScanState();
+                _editingSensor = null;
+            }
+            else if (_awaitingHermeticCheck)
+            {
+                MessageQueue?.Enqueue($"Неверная гребёнка для герметичности: {CurrentCartridgeCode}");
+            }
+        }
+
+
+        private bool IsCodeNotUsedAsSensor(string code)
+        {
+            return CartridgeSensors.All(x =>
+            x.SensorCode1 != code &&
+            x.SensorCode2 != code &&
+            x.SensorCode3 != code &&
+            x.SensorCode4 != code &&
+            x.SensorCode5 != code &&
+            x.SensorCode6 != code &&
+            x.SensorCode7 != code &&
+            x.SensorCode8 != code) && !_db.CartridgeSensors.Any(x =>
+            x.SensorCode1 == code ||
+            x.SensorCode2 == code ||
+            x.SensorCode3 == code ||
+            x.SensorCode4 == code ||
+            x.SensorCode5 == code ||
+            x.SensorCode6 == code ||
+            x.SensorCode7 == code ||
+            x.SensorCode8 == code);
+        }
+        private bool IsCodeNotUsedAsComb(string code)
+        {
+            return CartridgeSensors.All(x => x.Cartridge.CartridgeCode != code) && !_db.CartridgeSensors.Any(x => x.Cartridge.CartridgeCode == code);
+        }
+        private void ResetScanState()
+        {
+            CurrentCartridgeCode = "";
+            _awaitingHermeticCheck = false;
+            _currentSensorIndex = 0;
+            RefreshGrid();
+            PrepareNextComb();
+        }
+
+        private void SetSensorCode(int idx, string code, CartridgeSensor target)
+        {
+            switch (idx)
+            {
+                case 0: target.SensorCode1 = code; break;
+                case 1: target.SensorCode2 = code; break;
+                case 2: target.SensorCode3 = code; break;
+                case 3: target.SensorCode4 = code; break;
+                case 4: target.SensorCode5 = code; break;
+                case 5: target.SensorCode6 = code; break;
+                case 6: target.SensorCode7 = code; break;
+                case 7: target.SensorCode8 = code; break;
+            }
+            RefreshGrid();
+        }
+
+        private void ClearSensorCodes(CartridgeSensor cs)
+        {
+            cs.SensorCode1 = cs.SensorCode2 = cs.SensorCode3 = cs.SensorCode4
+                          = cs.SensorCode5 = cs.SensorCode6 = cs.SensorCode7 = cs.SensorCode8 = "";
+            cs.StatusGeremetic = false;
+            RefreshGrid();
+        }
+
+        private bool IsUniqueCombCode(string code, CartridgeSensor? ignore)
+        {
+           
+            if (CartridgeSensors.Any(x => x != ignore && x.Cartridge.CartridgeCode == code))
+                return false;
+            // в базе
+            var dbMatch = _db.CartridgeSensors
+                             .Include("Cartridge")
+                             .FirstOrDefault(x => x.Cartridge.CartridgeCode == code && x.IsLoaded == false);
+            if (dbMatch != null && dbMatch != ignore)
+                return false;
+            return true;
+        }
+
+        private bool IsUniqueSensorCode(string code, CartridgeSensor? ignore)
+        {
+         
+            foreach (var x in CartridgeSensors.Where(x => x != ignore))
+            {
+                if (new[] {
+                    x.SensorCode1, x.SensorCode2, x.SensorCode3, x.SensorCode4,
+                    x.SensorCode5, x.SensorCode6, x.SensorCode7, x.SensorCode8
+                }.Contains(code))
+                    return false;
+            }
+            /
+            foreach (var dbx in _db.CartridgeSensors.Where(x => x.IsLoaded == false && x != ignore))
+            {
+                if (new[] {
+                    dbx.SensorCode1, dbx.SensorCode2, dbx.SensorCode3, dbx.SensorCode4,
+                    dbx.SensorCode5, dbx.SensorCode6, dbx.SensorCode7, dbx.SensorCode8
+                }.Contains(code))
+                    return false;
+            }
+            return true;
+        }
+
+        private void Delete(CartridgeSensor cs)
+        {
+          
+
+            if(!string.IsNullOrEmpty(CurrentCartridgeCode) && cs.Cartridge.CartridgeCode != CurrentCartridgeCode)
+            {
+                MessageQueue.Enqueue($"Cейчас сканируется гребенка {CurrentCartridgeCode}. Завершите её сканирование.");
+                return;
+            }
+            if (MessageBox.Show($"Удалить гребёнку {cs.Cartridge.CartridgeCode}?",
+                                "Подтвердите",
+                                MessageBoxButton.YesNo) != MessageBoxResult.Yes)
+                return;
+            // удалить из БД, если сохранена
+            if (cs.CartridgeSensorId > 0)
+            {
+                _db.CartridgeSensors.Remove(cs);
+                _db.SaveChanges();
+            }
+            CurrentStepMessage = "Гребенка успешно удалена. Отсканируйте следующую гребенку.";
+            ResetScanState();
+            CartridgeSensors.Remove(cs);
+            IsScanningInProgress = false;
+            RefreshGrid();
+        }
+
+        private void Finish()
+        {
+            // сохраняем все новые (где Id==0)
+            var toSave = CartridgeSensors.Where(x => x.CartridgeSensorId == 0).ToList();
+            if (toSave.Count == 0)
+            {
+                CurrentStepMessage = "Нет новых записей для сохранения.";
+                return;
+            }
+            var incomplete = toSave.Where(x =>
+            string.IsNullOrWhiteSpace(x.SensorCode1) ||
+            string.IsNullOrWhiteSpace(x.SensorCode2) ||
+            string.IsNullOrWhiteSpace(x.SensorCode3) ||
+            string.IsNullOrWhiteSpace(x.SensorCode4) ||
+            string.IsNullOrWhiteSpace(x.SensorCode5) ||
+            string.IsNullOrWhiteSpace(x.SensorCode6) ||
+            string.IsNullOrWhiteSpace(x.SensorCode7) ||
+            string.IsNullOrWhiteSpace(x.SensorCode8)).ToList();
+
+            if(incomplete.Any())
+            {
+                var codes = string.Join(", ", incomplete.Select(x => x.Cartridge.CartridgeCode));
+                MessageQueue?.Enqueue($"Не все сенсоры отсканированы у гребенок: {codes}");
+                return;
+            }
+            foreach (var cs in toSave)
+            {
+                _db.CartridgeSensors.Add(cs);
+            }
+            _db.SaveChanges();
+            CurrentStepMessage = $"Сохранено {toSave.Count} записей.";
+
+        }
+
+        private void RefreshGrid()
+        {
+            Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                CollectionViewSource.GetDefaultView(CartridgeSensors)?.Refresh();
+            }), DispatcherPriority.Background);
+        }
+
+        #region INotify
+        public event PropertyChangedEventHandler? PropertyChanged;
+        protected void OnPropertyChanged([CallerMemberName] string n = "") =>
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
+        protected bool SetField<T>(ref T f, T v, [CallerMemberName] string n = "")
+        {
+            if (Equals(f, v)) return false;
+            f = v; OnPropertyChanged(n); return true;
+        }
+        #endregion
+
+
+
+        private void StartEdit(CartridgeSensor sensorToEdit)
+        {
+            if(IsScanningInProgress)
+            {
+                MessageQueue?.Enqueue("Сначала завершите текущее сканирование.");
+                return;
+            }
+            _editingSensor = sensorToEdit;
+            CurrentCartridgeCode = "";
+            _currentSensorIndex = 0;
+            _awaitingHermeticCheck = false;
+
+            ClearSensorCodes(sensorToEdit);
+
+            CurrentStepMessage = $"(Ред.) Сканируйте новую гребенку";
+        }
+    }
+
+    // RelayCommand с параметром
+    public class RelayCommand1<T> : ICommand
+    {
+        
+        private readonly Action<T> _exec;
+        private readonly Func<bool>? _can;
+        public RelayCommand1(Action<T> exec, Func<bool>? can = null)
+        {
+            _exec = exec; _can = can;
+        }
+        public bool CanExecute(object? p) => _can?.Invoke() ?? true;
+        public void Execute(object? p) => _exec((T)p!);
+        public event EventHandler? CanExecuteChanged
+        {
+            add => CommandManager.RequerySuggested += value;
+            remove => CommandManager.RequerySuggested -= value;
+        }
+    
+    }
+
+}
+LoadCamera_UserControl
+ public partial class LoadCamera_UserControl : UserControl
+ {
+     public LoadCamera_UserControl()
+     {
+         InitializeComponent();
+         DataContext = new LoadCameraViewModel();
+     }
+
+     private void CompleteButton_Click(object s, RoutedEventArgs e)
+     {
+         var vm = (LoadCameraViewModel)DataContext;
+         DialogHost.CloseDialogCommand.Execute(vm.LoadedSensors, this);
+     }
+ }
+
+LoadCameraViewModel
+    public class LoadCameraViewModel : INotifyPropertyChanged
+    {
+      
+        public class CombButton : INotifyPropertyChanged
+        {
+            public int Position { get; }         
+            public string Label => Position.ToString();
+
+            public string Group { get; }    
+
+            bool _isHighlighted;
+            public bool IsHighlighted
+            {
+                get => _isHighlighted;
+                set { _isHighlighted = value; OnPropertyChanged(); }
+            }
+
+            bool _isLoaded;
+            public bool IsLoaded
+            {
+                get => _isLoaded;
+                set { _isLoaded = value; OnPropertyChanged(); }
+            }
+
+            public CombButton(int pos, string grp) { Position = pos; Group = grp; }
+
+            public event PropertyChangedEventHandler? PropertyChanged;
+            void OnPropertyChanged([CallerMemberName] string p = null!) =>
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(p));
+        }
+
+     
+        public ObservableCollection<CombButton> PneumoButtons { get; } = new();
+        public ObservableCollection<CombButton> Hydro1Buttons { get; } = new();
+        public ObservableCollection<CombButton> Hydro2Buttons { get; } = new();
+
+        public ObservableCollection<CartridgeSensor> UnloadedCombs { get; } = new();
+        public ObservableCollection<CartridgeSensor> LoadedCombs { get; } = new();
+
+        public ObservableCollection<CartridgeSensor> LoadedSensors => LoadedCombs;
+
+        
+        string _infoText = "Инициализация…";
+        public string InfoText
+        {
+            get => _infoText;
+            set { _infoText = value; OnPropertyChanged(); }
+        }
+
+        CombButton? _currentBtn;         
+
+   
+        public ICommand ButtonClickCommand { get; }
+        public ICommand CompleteCommand { get; }
+
+      
+        public LoadCameraViewModel()
+        {
+           
+            for (int i = 1; i <= 64; i++)
+            {
+                switch (i % 3)                   
+                {
+                    case 1: PneumoButtons.Add(new CombButton(i, "PNEUMO")); break;
+                    case 2: Hydro1Buttons.Add(new CombButton(i, "HYDRO1")); break;
+                    default: Hydro2Buttons.Add(new CombButton(i, "HYDRO2")); break;
+                }
+            }
+
+       
+            foreach (var cs in CameraService.GetUnloadedCartridges()
+                                            .Where(x => x.StatusGeremetic == true))
+                UnloadedCombs.Add(cs);
+
+            ButtonClickCommand = new RelayCommand<CombButton>(OnClick);
+            CompleteCommand = new RelayCommand<object>(_ => { }, _ => UnloadedCombs.Count == 0);
+
+            SelectNextComb();  
+        }
+
+      
+        void OnClick(CombButton btn)
+        {
+            if (btn != _currentBtn) return;   // кликают не ту – игнорируем
+
+            btn.IsLoaded = true;
+            btn.IsHighlighted = false;
+
+            var comb = UnloadedCombs.First(); // именно тот, что ожидали
+            UnloadedCombs.Remove(comb);
+            LoadedCombs.Add(comb);
+            CameraService.MarkAsLoaded(comb.CartridgeSensorId);
+
+            SelectNextComb();
+        }
+
+     
+        void SelectNextComb()
+        {
+            if (!UnloadedCombs.Any())
+            {
+                InfoText = "Все гребёнки загружены";
+                _currentBtn = null;
+                return;
+            }
+
+            var next = UnloadedCombs.First();                          
+            string targetGroup = next.Cartridge!.CartridgeTypeId switch   // 1/2/3
+            {
+                1 => "PNEUMO",
+                2 => "HYDRO1",
+                3 => "HYDRO2",
+                _ => "PNEUMO"
+            };
+
+            var pool = targetGroup switch
+            {
+                "PNEUMO" => PneumoButtons,
+                "HYDRO1" => Hydro1Buttons,
+                "HYDRO2" => Hydro2Buttons,
+                _ => PneumoButtons
+            };
+
+            _currentBtn = pool.First(b => !b.IsLoaded);
+            _currentBtn.IsHighlighted = true;
+
+            InfoText = $"Поставьте гребёнку №{next.Cartridge.CartridgeCode} " +
+                       (targetGroup == "PNEUMO" ? "в пневмомагистраль"
+                   : targetGroup == "HYDRO1" ? "в гидромагистраль #1"
+                                                : "в гидромагистраль #2");
+        }
+
+     
+        public event PropertyChangedEventHandler? PropertyChanged;
+        void OnPropertyChanged([CallerMemberName] string p = null!) =>
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(p));
+    }
+}
+CustomDialog_LoadProgram
+
+    public partial class CustomDialog_LoadProgram : UserControl
+    {
+        public SnackbarMessageQueue MessageQueue { get; }
+
+        public CustomDialog_LoadProgram()
+        {
+            InitializeComponent();
+            MessageQueue = new SnackbarMessageQueue(TimeSpan.FromSeconds(2));
+
+            try
+            {
+                var progs = ProgramService.GetAllPrograms();
+                ProgramDataGrid.ItemsSource = new ObservableCollection<Program>(progs);
+            }
+            catch (Exception ex)
+            {
+                MessageQueue.Enqueue($"Ошибка при загрузке программ: {ex.Message}");
+            }
+        }
+
+        private void ProgramDataGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (ProgramDataGrid.SelectedItem is Program p)
+            {
+                try
+                {
+                    ProgramStepsDataGrid.ItemsSource =
+                        new ObservableCollection<ProgramStep>(ProgramService.GetProgramSteps(p.ProgramId));
+                }
+                catch (Exception ex)
+                {
+                    MessageQueue.Enqueue($"Ошибка загрузки шагов: {ex.Message}");
+                }
+            }
+        }
+
+        private void buttonCancel_Click(object sender, RoutedEventArgs e)
+        {
+            DialogHost.CloseDialogCommand.Execute(null, this);
+        }
+
+        private void buttonOKSelectProgram_Click(object sender, RoutedEventArgs e)
+        {
+            if (ProgramDataGrid.SelectedItem is Program p)
+            {
+                DialogHost.CloseDialogCommand.Execute(p, this);
+            }
+            else
+            {
+                MessageQueue.Enqueue("Пожалуйста, выберите программу.");
+            }
+        }
+    }
+}
+
+
+OperatorWindow
+    public partial class OperatorWindow : Window
+    {
+        public ObservableCollection<CombModel> PneumoCombs { get; } = new();
+        public ObservableCollection<CombModel> Hydro1Combs { get; } = new();
+        public ObservableCollection<CombModel> Hydro2Combs { get; } = new();
+
+
+        private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(5) };
+
+           private DispatcherTimer _countDownTimer = new() { Interval = TimeSpan.FromSeconds(1) };
+    private TimeSpan _timeLeft;
+
+        public OperatorWindow()
+        {
+
+            InitializeComponent();
+            DataContext = this;
+
+           
+        }
+
+        private void Window_Loaded(object sender, RoutedEventArgs e)
+        {
+            LoadCombs();
+            LoadProgram();
+        }
+
+        private void LoadCombs()
+        {
+            PneumoCombs.Clear();
+            Hydro1Combs.Clear();
+            Hydro2Combs.Clear();
+
+            using var db = new Htwp3DbContext();
+            var list = db.CartridgeSensors
+                         .Include(cs => cs.Cartridge)
+                         .Where(cs => cs.IsLoaded == true)
+                         .ToList();
+
+            foreach (var cm in list.Select(cs => cs.ToCombModel()))
+            {
+                switch (cm.Category)
+                {
+                    case "Пневмо": PneumoCombs.Add(cm); break;
+                    case "Гидро 1": Hydro1Combs.Add(cm); break;
+                    case "Гидро 2": Hydro2Combs.Add(cm); break;
+                }
+            }
+
+            if (PneumoCombs.Concat(Hydro1Combs).Concat(Hydro2Combs).FirstOrDefault() is var first && first != null)
+                ShowResults(first);
+        }
+
+        private void LoadProgram()
+        {
+            using var db = new Htwp3DbContext();
+            var program = db.Programs
+                            .Include(p => p.ProgramSteps)
+                            .FirstOrDefault();
+            if (program == null) return;
+
+            ProgramNameText.Text = program.ProgramName;
+            ProgramDataGrid.ItemsSource = program.ProgramSteps.OrderBy(s => s.PointNumber).ToList();
+            if (ProgramDataGrid.Items.Count > 0)
+                ProgramDataGrid.SelectedIndex = 0;
+        }
+
+
+
+   
+    }
+}
+
+
