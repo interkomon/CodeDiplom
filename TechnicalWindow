@@ -1,0 +1,1552 @@
+TechnicalWindow
+public partial class TechnicalWindow : System.Windows.Window, IGetData
+    {
+       
+        public SnackbarMessageQueue MessageQueue { get; private set; }
+
+
+
+        // Коллекция программ
+        private ObservableCollection<Program> _programs = new ObservableCollection<Program>();
+        private ObservableCollection<ProgramStep> _stepsCollection = new ObservableCollection<ProgramStep>();
+
+        public ObservableCollection<string> PressureSpeedOptions { get; set; } = ["Медленно", "Средне", "Быстро"];
+        public ObservableCollection<string> TemperatureModeOptions { get; set; } = ["По скорости", "По времени"];
+
+       
+        private readonly Dictionary<string, string> _pressureSpeedMap = new()
+        {
+            { "Медленно", "Slow" },
+            { "Средне", "Medium" },
+            { "Быстро", "Fast" }
+        };
+
+        private readonly Dictionary<string, string> _temperatureModeMap = new()
+        {
+            { "По скорости", "Speed" },
+            { "По времени", "Time" }
+        };
+
+        
+        private readonly Dictionary<string, string> _pressureSpeedReverseMap;
+        private readonly Dictionary<string, string> _temperatureModeReverseMap;
+
+    
+        // Мультиметры и путь к Multimeters.exe
+        private string filepathexe;
+        private Process _multimeterAppProcess;
+        private Process _logsAppProcess;
+        private string serialNumber;
+
+        PowerSupplyController powerSupply;
+        VisaComLib.ResourceManager rm = new VisaComLib.ResourceManager();
+        FormattedIO488 myDmm = new FormattedIO488();    //Open a new Formatted IO 488 session для поиска мультиметров
+        FormattedIO488 myDmm2 = new FormattedIO488();    //Open a new Formatted IO 488 session для поиска мультиметров
+
+        private string[] devices1 = new string[32];
+        private string[] devices2 = new string[32];
+
+   
+        public TechnicalWindow()
+        {
+            InitializeComponent();
+            LoadPrograms();
+            ResetFields();
+            MessageQueue = new SnackbarMessageQueue(TimeSpan.FromMilliseconds(1700));
+            DataContext = new TechnicalWindowViewModel();
+
+         
+            _pressureSpeedReverseMap = _pressureSpeedMap.ToDictionary(pair => pair.Value, pair => pair.Key);
+            _temperatureModeReverseMap = _temperatureModeMap.ToDictionary(pair => pair.Value, pair => pair.Key);
+
+
+
+            SettingsFileNameCam = GetSecureDataHelper.GetUserSettingsFileCam();
+            SettingsFileNameScanner = GetSecureDataHelper.GetUserSettingsFileScanner();
+            SettingsFileNameScanner2 = GetSecureDataHelper.GetUserSettingsFileScanner2();
+            SettingsFileNameMultimeter = GetSecureDataHelper.GetUserSettingsFileMultimeter();
+            SettingsFileNameMultimeter2 = GetSecureDataHelper.GetUserSettingsFileMultimeter2();
+            SettingFilePath = GetSecureDataHelper.GetUserSettingsFilePath();
+            SettingsFileNameCommutator = GetSecureDataHelper.GetUserSettingsFileCommutator();
+            SettingFilePathReport = GetSecureDataHelper.GetUserSettingsFilePathReport();
+            SettingsFileNamePowerSupply = GetSecureDataHelper.GetUserSettingsFilePowerSupply();
+            SettingsFileNamePowerSupplySetup = GetSecureDataHelper.GetUserSettingsFilePowerSupply();
+            SettingsFileNameAGK = GetSecureDataHelper.GetUserSettingsFileAGK();
+            SettingsFileNameAPK = GetSecureDataHelper.GetUserSettingsFileAPK();
+            SettingsFileNameManometer = GetSecureDataHelper.GetUserSettingsFileManometer();
+            SettingsFileNameSNCommutatorModul = GetSecureDataHelper.GetUserSettingsFileSNCommutatorModul();
+            SettingsFileNameSNCrossModul = GetSecureDataHelper.GetUserSettingsFileSNCrossModul();
+            SettingsFileNameSNCartidge = GetSecureDataHelper.GetUserSettingsFileSNCartidge();
+
+
+
+        }
+
+        public TechnicalWindow(string fullname)
+        {
+            InitializeComponent();
+            LoadPrograms();
+            ResetFields();
+         
+            MessageQueue = new SnackbarMessageQueue(TimeSpan.FromMilliseconds(1700));
+            DataContext = new TechnicalWindowViewModel();
+
+           
+            _pressureSpeedReverseMap = _pressureSpeedMap.ToDictionary(pair => pair.Value, pair => pair.Key);
+            _temperatureModeReverseMap = _temperatureModeMap.ToDictionary(pair => pair.Value, pair => pair.Key);
+
+
+            SettingsFileNameCam = GetSecureDataHelper.GetUserSettingsFileCam();
+            SettingsFileNameScanner = GetSecureDataHelper.GetUserSettingsFileScanner();
+            SettingsFileNameScanner2 = GetSecureDataHelper.GetUserSettingsFileScanner2();
+            SettingsFileNameMultimeter = GetSecureDataHelper.GetUserSettingsFileMultimeter();
+            SettingsFileNameMultimeter2 = GetSecureDataHelper.GetUserSettingsFileMultimeter2();
+            SettingFilePath = GetSecureDataHelper.GetUserSettingsFilePath();
+            SettingsFileNameCommutator = GetSecureDataHelper.GetUserSettingsFileCommutator();
+            SettingFilePathReport = GetSecureDataHelper.GetUserSettingsFilePathReport();
+            SettingsFileNamePowerSupply = GetSecureDataHelper.GetUserSettingsFilePowerSupply();
+            SettingsFileNamePowerSupplySetup = GetSecureDataHelper.GetUserSettingsFilePowerSupply();
+            SettingsFileNameAGK = GetSecureDataHelper.GetUserSettingsFileAGK();
+            SettingsFileNameAPK = GetSecureDataHelper.GetUserSettingsFileAPK();
+            SettingsFileNameManometer = GetSecureDataHelper.GetUserSettingsFileManometer();
+            SettingsFileNameSNCommutatorModul = GetSecureDataHelper.GetUserSettingsFileSNCommutatorModul();
+            SettingsFileNameSNCrossModul = GetSecureDataHelper.GetUserSettingsFileSNCrossModul();
+            SettingsFileNameSNCartidge = GetSecureDataHelper.GetUserSettingsFileSNCartidge();
+        }
+
+
+
+
+        private async Task InitializeAllAsync()
+        {
+
+            // Генерация QR-кода 
+            await Task.Run(() => CreateQRCode());
+
+            Load_SavedPowerSupplySettings();
+
+            // Загрузка информации об устройствах (WMI-запросы)
+            await LoadDevicesAsync();
+            
+          
+
+
+
+        }
+
+     
+
+     
+
+        async void IGetData.DataScanned(string value)
+        {
+            try
+            {
+                await Dispatcher.Invoke(async () =>
+                {
+                    CheckScanner.Text = value;
+                });
+            }
+            catch (Exception ex)
+            {
+                CheckScanner.Text = ex.Message;
+            }
+
+        }
+
+        private void CreateQRCode()
+        {
+            string qrText = "test";
+            using (QRCodeGenerator qrGenerator = new QRCodeGenerator())
+            {
+                using (QRCodeData qrCodeData = qrGenerator.CreateQrCode(qrText, QRCodeGenerator.ECCLevel.Q))
+                {
+                    using (QRCode qrCode = new QRCode(qrCodeData))
+                    {
+                        using (Bitmap qrCodeImages = qrCode.GetGraphic(20))
+                        {
+
+                            using (MemoryStream memoryStream = new MemoryStream())
+                            {
+                                qrCodeImages.Save(memoryStream, System.Drawing.Imaging.ImageFormat.Png);
+                                memoryStream.Position = 0;
+
+                                BitmapImage bitmapImage = new BitmapImage();
+                                bitmapImage.BeginInit();
+                                bitmapImage.StreamSource = memoryStream;
+                                bitmapImage.CacheOption = BitmapCacheOption.OnLoad;
+                                bitmapImage.EndInit();
+
+                                bitmapImage.Freeze();
+
+                                Dispatcher.Invoke(() =>
+                                {
+                                    qrCodeImage.Source = bitmapImage;
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+
+     
+
+
+
+
+
+
+        // Метод загрузки программ
+        private void LoadPrograms()
+        {
+          
+            _programs = ProgramService.GetAllPrograms();
+            SensorTypesComboBox.ItemsSource = _programs;
+            SensorTypesComboBox.DisplayMemberPath = nameof(Program.ProgramName);
+        }
+
+        // Конвертация для сохранения: если значение входит в словарь, возвращаем английский вариант
+        private string ConvertPressureSpeedToEnglish(string value)
+        {
+            return _pressureSpeedMap.ContainsKey(value) ? _pressureSpeedMap[value] : value;
+        }
+        private string ConvertTemperatureModeToEnglish(string value)
+        {
+            return _temperatureModeMap.ContainsKey(value) ? _temperatureModeMap[value] : value;
+        }
+        // При загрузке – обратно в русский формат:
+        private string ConvertPressureSpeedToRussian(string value)
+        {
+            return _pressureSpeedReverseMap.ContainsKey(value) ? _pressureSpeedReverseMap[value] : value;
+        }
+        private string ConvertTemperatureModeToRussian(string value)
+        {
+            return _temperatureModeReverseMap.ContainsKey(value) ? _temperatureModeReverseMap[value] : value;
+        }
+
+        private bool ValidateInputs()
+        {
+            bool isValid = true;
+
+            // Проверяем фамилию
+            if (string.IsNullOrWhiteSpace(SurnameTextBox.Text) || SurnameTextBox.Text.Length < 2)
+            {
+                SurnameTextBox.Foreground = new SolidColorBrush(Colors.Red);
+                isValid = false;
+            }
+            else
+            {
+                SurnameTextBox.ClearValue(TextBox.ForegroundProperty);
+            }
+
+            // Проверяем имя
+            if (string.IsNullOrWhiteSpace(NameTextBox.Text) || NameTextBox.Text.Length < 2)
+            {
+                NameTextBox.Foreground = new SolidColorBrush(Colors.Red);
+                isValid = false;
+            }
+            else
+            {
+                NameTextBox.ClearValue(TextBox.ForegroundProperty);
+            }
+
+            // Проверяем отчество
+            if (string.IsNullOrWhiteSpace(PatronymicTextBox.Text) || PatronymicTextBox.Text.Length < 2)
+            {
+                PatronymicTextBox.Foreground = new SolidColorBrush(Colors.Red);
+                isValid = false;
+            }
+            else
+            {
+                PatronymicTextBox.ClearValue(TextBox.ForegroundProperty);
+            }
+
+            // Проверяем Email
+            if (!IsValidEmail(EmailTextBox.Text))
+            {
+                EmailTextBox.Foreground = new SolidColorBrush(Colors.Red);
+                isValid = false;
+            }
+            else
+            {
+                EmailTextBox.ClearValue(TextBox.ForegroundProperty);
+            }
+
+            // Проверяем телефон
+            if (string.IsNullOrWhiteSpace(PhoneNumberTextBox.Text))
+            {
+                PhoneNumberTextBox.Foreground = new SolidColorBrush(Colors.Red);
+                isValid = false;
+            }
+            else
+            {
+                PhoneNumberTextBox.ClearValue(TextBox.ForegroundProperty);
+            }
+
+
+
+
+            if (isValid) return true;
+            else return false;
+
+        }
+
+        private async void AddPerson(object sender, RoutedEventArgs e)
+        {
+            if (!ValidateInputs())
+            {
+                MessageQueue.Enqueue("Верно заполните все поля и выберите значения.");
+                return;
+            }
+
+            string surname = SurnameTextBox.Text;
+            string name = NameTextBox.Text;
+            string patronymic = PatronymicTextBox.Text;
+            string email = EmailTextBox.Text;
+            string phoneNumber = PhoneNumberTextBox.Text;
+            string note = NoteTextBox.Text;
+
+            int selectedRoleId = 1;
+
+
+
+            if (!await RegisterUserAsync(surname, name, patronymic, email, phoneNumber, note, selectedRoleId))
+            {
+                MessageQueue.Enqueue("Ошибка регистрации.");
+            }
+        }
+
+        public async Task<bool> RegisterUserAsync(string surname, string name, string patronymic, string email, string phoneNumber, string note, int selectedRoleId)
+        {
+            using (var context = new Htwp3DbContext())
+            {
+                string username = UserRegisterHelper.GenerateUsername();
+                string password = UserRegisterHelper.GeneratePassword();
+
+                var existingUser = context.Users.FirstOrDefault(u => u.Username == username);
+
+                // такой логин уже есть 
+                if (existingUser != null)
+                {
+                    return false;
+                }
+
+                string salt = PasswordHasher.GenerateSalt();
+                string passwordHash = PasswordHasher.HashPassword(password, salt);
+
+
+                var selectedRole = context.Roles.FirstOrDefault(wp => wp.RoleId == selectedRoleId);
+                if (selectedRole == null) return false;
+
+
+
+
+
+                var newUser = new User
+                {
+                    Username = username,
+                    Password = passwordHash,
+                    Salt = salt,
+                    Surname = surname,
+                    Name = name,
+                    Patronymic = patronymic,
+                    Email = email,
+                    PhoneNumber = phoneNumber,
+                    IsBlocked = false,
+                    RoleId = selectedRoleId,
+                    Note = note
+
+                };
+
+                context.Users.Add(newUser);
+                context.SaveChanges();
+
+                await ShowDialogAsync(username, password, passwordHash, name, patronymic, surname);
+
+                ClearFields();
+
+                return true;
+            }
+        }
+
+        private void ClearFields()
+        {
+            SurnameTextBox.Text = string.Empty;
+            NameTextBox.Text = string.Empty;
+            PatronymicTextBox.Text = string.Empty;
+            EmailTextBox.Text = string.Empty;
+            PhoneNumberTextBox.Text = string.Empty;
+            NoteTextBox.Text = string.Empty;
+
+
+        }
+
+
+        private async Task ShowDialogAsync(string username, string password, string passwordHash, string name, string patronymic, string surname)
+        {
+            var dialog = new InfoPersonDialog(username, password, passwordHash, name, patronymic, surname);
+            var result = await DialogHost.ShowDialog(dialog);
+        }
+
+        private static bool IsValidEmail(string email)
+        {
+            string pattern = @"^[^@\s]+@[^@\s]+\.[^@\s]+$";
+            return Regex.IsMatch(email, pattern, RegexOptions.IgnoreCase);
+        }
+
+        private static bool IsValidPhoneNumber(string phoneNumber)
+        {
+            string pattern = @"^(?:\+7|8)[\s-]?\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}$";
+            return Regex.IsMatch(phoneNumber, pattern);
+        }
+
+        private void RefreshInputTextBox(TextBox textBox)
+        {
+            textBox.ClearValue(TextBox.ForegroundProperty);
+
+            if (textBox != null)
+            {
+                int caretIndex = textBox.CaretIndex;
+
+                string newText = new string(textBox.Text.Where(c => !char.IsDigit(c)).ToArray());
+
+                if (!string.IsNullOrEmpty(newText))
+                {
+                    newText = char.ToUpper(newText[0]) + newText.Substring(1);
+                }
+
+                if (textBox.Text != newText)
+                {
+                    textBox.Text = newText;
+                    textBox.CaretIndex = caretIndex;
+                }
+            }
+        }
+        private void RefreshInputNumbersTextBox(TextBox textBox)
+        {
+            textBox.ClearValue(TextBox.ForegroundProperty);
+
+            if (textBox != null)
+            {
+                int caretIndex = textBox.CaretIndex;
+
+                string newText = new string(textBox.Text.Where(c => char.IsDigit(c) || c == ',' || c == '-').ToArray());
+
+                if (!string.IsNullOrEmpty(newText))
+                {
+                    newText = char.ToUpper(newText[0]) + newText.Substring(1);
+                }
+
+                if (textBox.Text != newText)
+                {
+                    textBox.Text = newText;
+                    textBox.CaretIndex = caretIndex;
+                }
+            }
+        }
+
+
+        private void ValidateEmail()
+        {
+            if (!IsValidEmail(EmailTextBox.Text))
+            {
+                EmailTextBox.Foreground = new SolidColorBrush(Colors.Red);
+            }
+            else
+            {
+                EmailTextBox.Foreground = new SolidColorBrush(Colors.Black);
+            }
+        }
+
+        private void PhoneNumberTextBox_LostFocus(object sender, RoutedEventArgs e)
+        {
+            ValidatePhoneNumber();
+        }
+
+        private void ValidatePhoneNumber()
+        {
+            if (!IsValidPhoneNumber(PhoneNumberTextBox.Text))
+            {
+                PhoneNumberTextBox.Foreground = new SolidColorBrush(Colors.Red);
+            }
+            else
+            {
+                PhoneNumberTextBox.Foreground = new SolidColorBrush(Colors.Black);
+            }
+        }
+
+        private void PhoneNumberTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            PhoneNumberTextBox.Foreground = new SolidColorBrush(Colors.Black);
+        }
+
+        private void EmailTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            EmailTextBox.Foreground = new SolidColorBrush(Colors.Black);
+        }
+        private void CloseButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.Close();
+        }
+
+        private void MinimizeButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.WindowState = WindowState.Minimized;
+        }
+
+   
+
+        private async void Window_Loaded(object sender, RoutedEventArgs e)
+        {
+           
+                ChangeControlModule(true);
+                ChangeCrossModule(false);   
+                ChangeCaridge(false);
+                await InitializeAllAsync();
+
+         
+        }
+
+        private async void DataGrid_CellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
+        {
+            if (e.EditAction == DataGridEditAction.Commit)
+            {
+                var dataGrid = sender as DataGrid;
+                var updatedPerson = e.Row.Item as User;
+
+                if (updatedPerson != null && dataGrid.DataContext is TechnicalWindowViewModel viewModel)
+                {
+                    await viewModel.UpdatePersonAsync(updatedPerson);
+                }
+            }
+        }
+
+        private void DataGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+
+        }
+
+        private async void TabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            var viewModel = DataContext as TechnicalWindowViewModel;
+
+            // Проверяем, что новый выбранный элемент - это вкладка "Управление пользователями"
+            if (e.Source is TabControl && e.AddedItems.Count > 0)
+            {
+                TabItem? selectedTab = e.AddedItems[0] as TabItem;
+
+                if (selectedTab != null && selectedTab.Header.ToString() == "Управление пользователями")
+                {
+                    // Обновляем данные из базы данных
+
+                    if (viewModel != null)
+                    {
+                        await viewModel.LoadPeopleAsync(); // Загружаем данные из базы
+                    }
+                }
+            }
+        }
+
+        private void ScannerComboBox1_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (ScannerComboBox1.SelectedItem != null)
+            {
+                string selectedPort = ScannerComboBox1.SelectedItem.ToString();
+                int selectedIndex = ScannerComboBox1.SelectedIndex;
+                var settings = new UserSettings { SelectedPort = selectedPort, SelectedPortIndex = selectedIndex };
+                SaveSelectedPort(settings, SettingsFileNameScanner);
+
+                InitializeScanner(selectedPort); // Инициализируем сканер с новым портом
+            }
+        }
+
+        private void ScannerComboBox2_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (ScannerComboBox2.SelectedItem != null)
+            {
+                string selectedPort = ScannerComboBox2.SelectedItem.ToString();
+                int selectedIndex = ScannerComboBox2.SelectedIndex;
+                var settings = new UserSettings { SelectedPort2 = selectedPort, SelectedPortIndex2 = selectedIndex };
+                SaveSelectedPort(settings, SettingsFileNameScanner2); // Сохраняем выбранный порт
+
+                InitializeScanner(selectedPort); // Инициализируем сканер с новым портом
+            }
+        }
+
+        // Метод для инициализации сканера на основе выбранного COM-порта
+        private void InitializeScanner(string comPort)
+        {
+            COMScanner.InitializeScanner(this, comPort); // Инициализация сканера с выбранным портом
+        }
+
+
+        // Метод для сохранения выбранного порта в JSON файл
+
+        private void SaveSelectedPort(UserSettings settings, string settingsFileName)
+        {
+            var json = JsonConvert.SerializeObject(settings);
+            // Путь к скрытому файлу в директории AppData
+
+            var path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), settingsFileName);
+
+            // Сохраняем настройки в скрытый файл
+            File.WriteAllText(path, json);
+        }
+        // Метод для загрузки сохраненного порта из JSON файла
+        private void Load_SavedComPort()
+        {
+            var path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingsFileNameScanner);
+
+            if (File.Exists(path))
+            {
+                var json = File.ReadAllText(path);
+                var settings = JsonConvert.DeserializeObject<UserSettings>(json);
+
+                if (settings != null)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        ScannerComboBox1.SelectedIndex = settings.SelectedPortIndex; // Устанавливаем сохраненный порт
+                    });
+
+                    InitializeScanner(settings.SelectedPort); // Инициализируем сканер с сохраненным портом
+                }
+            }
+        }
+        private void Load_SavedComPort2()
+        {
+            var path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingsFileNameScanner2);
+
+            if (File.Exists(path))
+            {
+                var json = File.ReadAllText(path);
+                var settings = JsonConvert.DeserializeObject<UserSettings>(json);
+
+                if (settings != null)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        ScannerComboBox2.SelectedIndex = settings.SelectedPortIndex2; // Устанавливаем сохраненный порт
+                    });
+
+                    InitializeScanner(settings.SelectedPort2); // Инициализируем сканер с сохраненным портом
+                }
+            }
+        }
+
+        // Реализация метода интерфейса IGetData
+        public void DataScanned(string value)
+        {
+            MessageQueue.Enqueue($"Полученные данные: {value}");
+        }
+
+        private void ResetSettings(object sender, RoutedEventArgs e)
+        {
+            var path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingsFileNameCam);
+            var path1 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingsFileNameScanner);
+            var path2 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingsFileNameScanner2);
+            var path3 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingsFileNameMultimeter);
+            var path4 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingsFileNameMultimeter2);
+            var path5 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingFilePath);
+            var path6 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingsFileNameCommutator);
+            var path7 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingsFileNamePowerSupply);
+            var path8 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingsFileNameAGK);
+            var path9 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingsFileNameAPK);
+            var path10 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingsFileNameManometer);
+            var path11 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingFilePathReport);
+
+
+            if (File.Exists(path) || File.Exists(path1) || File.Exists(path2) || File.Exists(path3) || File.Exists(path4) || File.Exists(path5) || File.Exists(path6) || File.Exists(path7) || File.Exists(path8) || File.Exists(path9) || File.Exists(path10) || File.Exists(path11))
+            {
+                try
+                {
+                    File.Delete(path);
+                    File.Delete(path1);
+                    File.Delete(path2);
+                    File.Delete(path3);
+                    File.Delete(path4);
+                    File.Delete(path5);
+                    File.Delete(path6);
+                    File.Delete(path7);
+                    File.Delete(path8);
+                    File.Delete(path9);
+                    File.Delete(path10);
+                    File.Delete(path11);
+                    MessageQueue.Enqueue("Настройки сброшены.");
+
+                    CameraComboBox.SelectedIndex = -1;
+                    MultimetrComboBox.SelectedIndex = -1;
+                    MultimetrComboBox2.SelectedIndex = -1;
+                    PowerSupplyComboBox.SelectedIndex = -1;
+                    CommutatorComboBox.SelectedIndex = -1;
+                    ScannerComboBox1.SelectedIndex = -1;
+                    ScannerComboBox2.SelectedIndex = -1;
+                    PathMultimetersExe.Text = "";
+                    PathReportExe.Text = "";
+                    CommutatorComboBox.SelectedIndex = -1;
+                    PowerSupplyComboBox.SelectedIndex = -1;
+                    //AGK.SelectedIndex = -1;
+                    //APK.SelectedIndex = -1;
+                    Manometr.SelectedIndex = - 1;
+
+                   
+                }
+                catch (Exception ex)
+                {
+                    MessageQueue.Enqueue($"Ошибка при удалении настроек: {ex.Message}");
+                }
+            }
+            else
+            {
+                MessageQueue.Enqueue("Файл какой-то из настроек не найден.");
+            }
+        }
+        private void SearchPath(object sender, RoutedEventArgs e)
+        {
+            var ofd = new Microsoft.Win32.OpenFileDialog();
+            ofd.Filter = "Executable files (*.exe) |*.exe";
+            ofd.Title = "Выберите путь до программы с мультиметром - Multimeters.exe";
+            var result = ofd.ShowDialog();
+            if (result == false) return;
+            PathMultimetersExe.Text = ofd.FileName;
+            var pathApp = PathMultimetersExe.Text;
+            if (!pathApp.EndsWith("Multimeters.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                MessageQueue.Enqueue("Путь до программы с мультиметрами неправильный");
+                PathMultimetersExe.Text = "";
+                var path5 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingFilePath);
+                if (File.Exists(path5))
+                {
+                    File.Delete(path5);
+                }
+            }
+        }
+
+        private void SavePathMultimetersExe(string selectPath)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(selectPath))
+                {
+                    MessageQueue.Enqueue("Путь не может быть пустым.");
+                    return;
+                }
+
+                // Проверяем, инициализирована ли переменная SettingFilePath
+                if (string.IsNullOrEmpty(SettingFilePath))
+                {
+                    MessageQueue.Enqueue("Путь для сохранения настроек не задан.");
+                    return;
+                }
+
+                // Создаем объект с настройками пути
+                var settings = new UserSettings
+                {
+                    SelectedPath = selectPath
+                };
+
+                // Сериализуем объект настроек в строку JSON
+                var json = JsonConvert.SerializeObject(settings);
+
+                // Определяем путь к скрытому файлу в директории AppData
+                var path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingFilePath);
+
+                try
+                {
+                    // Сохраняем путь в файл
+                    File.WriteAllText(path, json);
+
+                }
+                catch (Exception ex)
+                {
+                    MessageQueue.Enqueue($"Ошибка при сохранении пути приложения: {ex.Message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageQueue.Enqueue($"Ошибка: {ex.Message}");
+            }
+        }
+
+
+        private void Load_SavedPath()
+        {
+            try
+            {
+                // Проверяем, инициализирована ли переменная SettingFilePath
+                if (string.IsNullOrEmpty(SettingFilePath))
+                {
+                    MessageQueue.Enqueue("Путь для загрузки настроек не задан.");
+                    return;
+                }
+
+                // Определяем путь к файлу с настройками
+                var path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingFilePath);
+
+                if (File.Exists(path))
+                {
+                    try
+                    {
+                        // Читаем JSON из файла и десериализуем его в объект UserSettings
+                        var json = File.ReadAllText(path);
+                        var settings = JsonConvert.DeserializeObject<UserSettings>(json);
+
+                        if (settings != null && !string.IsNullOrEmpty(settings.SelectedPath))
+                        {
+                            // Устанавливаем путь
+                            Dispatcher.Invoke(() =>
+                            {
+                                PathMultimetersExe.Text = settings.SelectedPath;
+                            });
+                        }
+                        else
+                        {
+                            MessageQueue.Enqueue("Сохраненный путь не найден.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageQueue.Enqueue($"Ошибка при загрузке сохраненного пути: {ex.Message}");
+                    }
+                }
+                else
+                {
+                    MessageQueue.Enqueue("Файл с сохраненными настройками мультиметра не найден.");
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageQueue.Enqueue($"Ошибка: {ex.Message}");
+            }
+        }
+
+        private void PathMultimetersExe_SelectionChanged(object sender, RoutedEventArgs e)
+        {
+            if (PathMultimetersExe.Text != null)
+            {
+                // Получаем выбранный путь 
+                string selectedPath = PathMultimetersExe.Text.ToString();
+
+
+                // Сохраняем выбранное устройство
+                SavePathMultimetersExe(selectedPath);
+            }
+        }
+
+        private void CommutatorComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (CommutatorComboBox.SelectedItem != null)
+            {
+                string selectedPort = CommutatorComboBox.SelectedItem.ToString();
+                int selectedIndex = CommutatorComboBox.SelectedIndex;
+                var settings = new UserSettings { SelectedPortCommutator = selectedPort, SelectedPortIndexCommuatator = selectedIndex };
+                SaveSelectedPort(settings, SettingsFileNameCommutator); // Сохраняем выбранный порт
+
+                //InitializeScanner(selectedPort);
+            }
+        }
+
+        private void Load_SavedReportPath()
+        {
+            try
+            {
+                // Проверяем, инициализирована ли переменная SettingFilePath
+                if (string.IsNullOrEmpty(SettingFilePathReport))
+                {
+                    MessageQueue.Enqueue("Путь для загрузки настроек не задан.");
+                    return;
+                }
+
+                // Определяем путь к файлу с настройками
+                var path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingFilePathReport);
+
+                if (File.Exists(path))
+                {
+                    try
+                    {
+                        // Читаем JSON из файла и десериализуем его в объект UserSettings
+                        var json = File.ReadAllText(path);
+                        var settings = JsonConvert.DeserializeObject<UserSettings>(json);
+
+                        if (settings != null && !string.IsNullOrEmpty(settings.SelectedPathReport))
+                        {
+                            // Устанавливаем путь
+                            Dispatcher.Invoke(() =>
+                            {
+                                PathReportExe.Text = settings.SelectedPathReport;
+                            });
+                        }
+                        else
+                        {
+                            MessageQueue.Enqueue("Сохраненный путь не найден.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageQueue.Enqueue($"Ошибка при загрузке сохраненного пути: {ex.Message}");
+                    }
+                }
+                else
+                {
+                    MessageQueue.Enqueue("Файл с сохраненными настройками мультиметра не найден.");
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageQueue.Enqueue($"Ошибка: {ex.Message}");
+            }
+        }
+        private void SaveReportPath(string selectPath)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(selectPath))
+                {
+                    MessageQueue.Enqueue("Путь не может быть пустым.");
+                    return;
+                }
+
+                // Проверяем, инициализирована ли переменная SettingFilePath
+                if (string.IsNullOrEmpty(SettingFilePathReport))
+                {
+                    MessageQueue.Enqueue("Путь для сохранения настроек не задан.");
+                    return;
+                }
+
+                // Создаем объект с настройками пути
+                var settings = new UserSettings
+                {
+                    SelectedPathReport = selectPath
+                };
+
+                // Сериализуем объект настроек в строку JSON
+                var json = JsonConvert.SerializeObject(settings);
+
+                // Определяем путь к скрытому файлу в директории AppData
+                var path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingFilePathReport);
+
+                try
+                {
+                    // Сохраняем путь в файл
+                    File.WriteAllText(path, json);
+
+                }
+                catch (Exception ex)
+                {
+                    MessageQueue.Enqueue($"Ошибка при сохранении пути отчета: {ex.Message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageQueue.Enqueue($"Ошибка: {ex.Message}");
+            }
+        }
+        private void PathReportExe_SelectionChanged(object sender, RoutedEventArgs e)
+        {
+            if (PathReportExe.Text != null)
+            {
+                // Получаем выбранный путь 
+                string selectedPath = PathReportExe.Text.ToString();
+
+
+                // Сохраняем выбранное устройство
+                SaveReportPath(selectedPath);
+            }
+
+        }
+        private void SearchReportPath(object sender, RoutedEventArgs e)
+        {
+            var ofd = new Microsoft.Win32.OpenFileDialog();
+            ofd.Filter = "Executable files (*.exe) |*.exe";
+            ofd.Title = "Выберите путь до программы с отчетом - ReportHTWP.exe";
+            var result = ofd.ShowDialog();
+            if (result == false) return;
+            PathReportExe.Text = ofd.FileName;
+            var pathApp = PathReportExe.Text;
+            if (!pathApp.EndsWith("ReportHTWP.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                MessageQueue.Enqueue("Путь до программы с отчетом неправильный");
+                PathReportExe.Text = "";
+
+                var path11 = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), SettingFilePathReport);
+                if (File.Exists(path11))
+                {
+                    File.Delete(path11);
+                }
+                    
+            }
+        }
+        private void CameraComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (CameraComboBox.SelectedItem != null)
+            {
+                string selectedPort = CameraComboBox.SelectedItem.ToString();
+                int selectedIndex = CameraComboBox.SelectedIndex;
+                var settings = new UserSettings { SelectedVideoDevice = selectedPort, SelectedCameraIndex = selectedIndex };
+                SaveSelectedPort(settings, SettingsFileNameCam); // Сохраняем выбранный порт
+
+                //InitializeScanner(selectedPort); // Инициализируем камеру тепла-холода с новым портом
+            }
+        }
+        private void AGKComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            //if (AGK.SelectedItem != null)
+            //{
+            //    string selectedPort = AGK.SelectedItem.ToString();
+            //    int selectedIndex = AGK.SelectedIndex;
+            //    var settings = new UserSettings { SelectedPortAGK = selectedPort, SelectedPortIndexAGK = selectedIndex };
+            //    SaveSelectedPort(settings, SettingsFileNameAGK); // Сохраняем выбранный порт
+
+            //    //InitializeScanner(selectedPort); // Инициализируем камеру тепла-холода с новым портом
+            //}
+        }
+        private void APKComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            //if (APK.SelectedItem != null)
+            //{
+            //    string selectedPort = APK.SelectedItem.ToString();
+            //    int selectedIndex = APK.SelectedIndex;
+            //    var settings = new UserSettings { SelectedPortAPK = selectedPort, SelectedPortIndexAPK = selectedIndex };
+            //    SaveSelectedPort(settings, SettingsFileNameAPK); // Сохраняем выбранный порт
+
+            //    //InitializeScanner(selectedPort); // Инициализируем камеру тепла-холода с новым портом
+            //}
+        }
+
+        private void ManometerComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (Manometr.SelectedItem != null)
+            {
+                string selectedPort = Manometr.SelectedItem.ToString();
+                int selectedIndex = Manometr.SelectedIndex;
+                var settings = new UserSettings { SelectedPortManometer = selectedPort, SelectedPortIndexManometer = selectedIndex };
+                SaveSelectedPort(settings, SettingsFileNameManometer); // Сохраняем выбранный порт
+
+                //InitializeScanner(selectedPort); // Инициализируем камеру тепла-холода с новым портом
+            }
+        }
+
+        private void PowerSupplyComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (PowerSupplyComboBox.SelectedItem != null)
+            {
+                string selectedPort = PowerSupplyComboBox.SelectedItem.ToString();
+                int selectedIndex = PowerSupplyComboBox.SelectedIndex;
+                UserSettings settings;
+                if (Voltage == null && Current == null)
+                {
+                    settings = new UserSettings { SelectedPortPowerSupply = selectedPort, SelectedPortIndexPowerSupply = selectedIndex };
+                }
+                else
+                {
+                    settings = new UserSettings { SelectedPortPowerSupply = selectedPort, SelectedPortIndexPowerSupply = selectedIndex, VoltagePowerSupply = VoltageTextBox.Text };
+                }
+                
+                SaveSelectedPort(settings, SettingsFileNamePowerSupply); // Сохраняем выбранный порт
+
+                //InitializeScanner(selectedPort); // Инициализируем камеру тепла-холода с новым портом
+            }
+        }
+ 
+        private void SensorTypesComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (SensorTypesComboBox.SelectedItem is Program selectedProgram)
+            {
+                if (!string.Equals(ProgramNameTextBox.Text, selectedProgram.ProgramName, StringComparison.CurrentCulture) ||
+                    !string.Equals(DescriptionTextBox.Text, selectedProgram.Description, StringComparison.CurrentCulture))
+                {
+                    AddProgramButton.Content = "Изменить программу";
+                }
+                else
+                {
+                    AddProgramButton.Content = "Добавить программу";
+                }
+
+                ProgramNameTextBox.Text = selectedProgram.ProgramName;
+                DescriptionTextBox.Text = selectedProgram.Description;
+                UpdateStepList(selectedProgram.ProgramId);
+            }
+
+            DeleteProgramButton.IsEnabled = SensorTypesComboBox.SelectedItem != null;
+        }
+
+        // Если пользователь меняет название алгоритма – меняем текст кнопки
+        private void ProgramNameTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (SensorTypesComboBox.SelectedItem is Program selectedProgram)
+            {
+                if (!string.Equals(ProgramNameTextBox.Text, selectedProgram.ProgramName, StringComparison.CurrentCulture) ||
+                    !string.Equals(DescriptionTextBox.Text, selectedProgram.Description, StringComparison.CurrentCulture))
+                {
+                    AddProgramButton.Content = "Изменить программу";
+                }
+                else
+                {
+                    AddProgramButton.Content = "Добавить программу";
+                }
+            }
+        }
+
+        // Добавление нового алгоритма или изменение существующего
+        private void AddProgramButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(ProgramNameTextBox.Text.Trim()))
+            {
+                MessageQueue.Enqueue("Название программы не может быть пустым");
+                return;
+            }
+
+            if (DescriptionTextBox.Text.Length > 400)
+            {
+                MessageQueue.Enqueue("Описание программы не может превышать 400 символов");
+                return;
+            }
+
+            if (SensorTypesComboBox.SelectedItem is Program selectedProgram)
+            {
+                // Изменяем существующую программу
+                selectedProgram.ProgramName = ProgramNameTextBox.Text.Trim();
+                selectedProgram.Description = DescriptionTextBox.Text.Trim();
+                if (!ProgramService.UpdateProgram(selectedProgram))
+                {
+                    MessageQueue.Enqueue("Ошибка изменения программы.");
+                }
+                else
+                {
+                    MessageQueue.Enqueue("Программа изменена успешно");
+                }
+                LoadPrograms();
+                SensorTypesComboBox.ItemsSource = _programs;
+                ResetFields();
+            }
+            else
+            {
+                // Регистрируем новую программу
+                if (!ProgramService.RegisterProgram(ProgramNameTextBox.Text, DescriptionTextBox.Text.Trim()))
+                {
+                    MessageQueue.Enqueue("Ошибка добавления программы.");
+                }
+                else
+                {
+                    LoadPrograms();
+                    SensorTypesComboBox.ItemsSource = _programs;
+
+                    var justAdded = _programs.FirstOrDefault(p => p.ProgramName == ProgramNameTextBox.Text.Trim());
+                    if (justAdded != null)
+                    {
+                        SensorTypesComboBox.SelectedItem = justAdded;
+                        UpdateStepList(justAdded.ProgramId);
+                    }
+
+                    MessageQueue.Enqueue("Программа добавлена успешно");
+                }
+                
+                //ResetFields();
+            }
+
+        }
+
+        // Метод сброса полей к исходному состоянию
+        private void ResetFields()
+        {
+            ProgramNameTextBox.Text = "";
+            DescriptionTextBox.Text = "";
+            StepsDataGrid.ItemsSource = null;
+            SensorTypesComboBox.SelectedIndex = -1;
+            AddProgramButton.Content = "Добавить программу";
+        }
+
+        // Удаление алгоритма
+        private void DeleteProgramButton_Click(object sender, RoutedEventArgs e)
+        {
+            MessageBoxResult message = MessageBox.Show("Вы уверены, что хотите удалить выбранную программу?", "Подтверждение", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (message == MessageBoxResult.Yes && SensorTypesComboBox.SelectedItem is Program selectedProgram)
+            {
+                if (!ProgramService.DeleteProgram(selectedProgram))
+                {
+                    MessageQueue.Enqueue("Ошибка удаления программы.");
+                }
+                else
+                {
+                    MessageQueue.Enqueue("Программа удалена");
+                }
+                LoadPrograms();
+                SensorTypesComboBox.ItemsSource = _programs;
+                ResetFields();
+            }
+        }
+
+        public bool ValidationStep()
+        {
+            // Здесь можно добавить проверку корректности введённых данных для шага
+            return true;
+        }
+
+        // Обработчик для сохранения нового шага (либо изменения существующего)
+        private void SaveStepButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.DataContext is ProgramStep step)
+            {
+                // Принудительно завершаем редактирование строки
+                StepsDataGrid.CommitEdit(DataGridEditingUnit.Cell, true);
+                StepsDataGrid.CommitEdit(DataGridEditingUnit.Row, true);
+
+                //if (DataContext is Te)
+
+                bool success = false;
+
+                if (step.ProgramStepId == 0)
+                {
+                    if (step.PointNumber == 0 && SensorTypesComboBox.SelectedItem is Program selectedProgram)
+                    {
+                        step.PointNumber = ProgramService.GetNextPointNumber(selectedProgram.ProgramId);
+                        step.ProgramId = selectedProgram.ProgramId;
+                        step.PressureSetupSpeed = ConvertPressureSpeedToEnglish(step.PressureSetupSpeed);
+                        step.TemperatureSetupMode = ConvertTemperatureModeToEnglish(step.TemperatureSetupMode);
+                    }
+                    success = ProgramService.SaveProgramStep(step);
+                }
+                else
+                {
+                    step.PressureSetupSpeed = ConvertPressureSpeedToEnglish(step.PressureSetupSpeed);
+                    step.TemperatureSetupMode = ConvertTemperatureModeToEnglish(step.TemperatureSetupMode);
+                    success = ProgramService.UpdateProgramStep(step);
+                }
+
+                if (success)
+                {
+                    step.IsModified = false;
+                    step.PressureSetupSpeed = ConvertPressureSpeedToRussian(step.PressureSetupSpeed);
+                    step.TemperatureSetupMode = ConvertTemperatureModeToRussian(step.TemperatureSetupMode);
+
+                    if (DataContext is TechnicalWindowViewModel viewModel)
+                    {
+                        viewModel.StoreOriginalStep(step);
+                    }
+
+                    // Используем диспетчер для вызова Refresh после завершения текущей операции редактирования
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        StepsDataGrid.Items.Refresh();
+                    }));
+                    MessageQueue.Enqueue("Этап успешно сохранен");
+                }
+                else
+                {
+                    MessageQueue.Enqueue("Ошибка сохранения шага");
+                }
+            }
+        }
+
+        // Поднятие шага выше
+        private void MoveStepUp_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.DataContext is ProgramStep step)
+            {
+                int idx = _stepsCollection.IndexOf(step);
+                if (idx > 0)
+                {
+                    _stepsCollection.Move(idx, idx - 1);
+                    RenumberSteps();
+                    StepsDataGrid.Items.Refresh();
+                }
+            }
+        }
+
+        // Опускание шага ниже
+        private void MoveStepDown_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.DataContext is ProgramStep step)
+            {
+                int idx = _stepsCollection.IndexOf(step);
+                if (idx < _stepsCollection.Count - 1)
+                {
+                    _stepsCollection.Move(idx, idx + 1);
+                    RenumberSteps();
+                    StepsDataGrid.Items.Refresh();
+                }
+            }
+        }
+
+        // Перенумеровка поля PointNumber в соответствии с позицией в коллекции + сохранение в БД
+        private void RenumberSteps()
+        {
+            for (int i = 0; i < _stepsCollection.Count; i++)
+            {
+                _stepsCollection[i].PointNumber = i + 1;
+
+                _stepsCollection[i].PressureSetupSpeed = ConvertPressureSpeedToEnglish(_stepsCollection[i].PressureSetupSpeed);
+                _stepsCollection[i].TemperatureSetupMode = ConvertTemperatureModeToEnglish(_stepsCollection[i].TemperatureSetupMode);
+
+                ProgramService.UpdateProgramStep(_stepsCollection[i]);
+
+                _stepsCollection[i].PressureSetupSpeed = ConvertPressureSpeedToRussian(_stepsCollection[i].PressureSetupSpeed);
+                _stepsCollection[i].TemperatureSetupMode = ConvertTemperatureModeToRussian(_stepsCollection[i].TemperatureSetupMode);
+            }
+        }
+
+        private void AddStepButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (!(SensorTypesComboBox.SelectedItem is Program selectedProgram))
+            {
+                MessageQueue.Enqueue("Выберите программу для добавления этапа");
+                return;
+            }
+            // Создаём новый этап с дефолтными значениями (русские подписи – они и отобразятся в UI, а для сохранения позже преобразуем в английский)
+            var newStep = new ProgramStep
+            {
+                ProgramId = selectedProgram.ProgramId,
+                PointNumber = ProgramService.GetNextPointNumber(selectedProgram.ProgramId),
+                PressureSetupSpeed = "Slow",    // значение по умолчанию (отображается в UI)
+                TemperatureSetupMode = "Speed",     // значение по умолчанию (отображается в UI)
+                TargetPressure = 0,
+                TargetTemperature = 0,
+                TemperatureSetupValue = 0,
+                HoldTime = 0,
+                IsModified = false  // сразу после успешного сохранения станет false
+            };
+            // Перед сохранением преобразуем отображаемые значения в английские
+            newStep.PressureSetupSpeed = ConvertPressureSpeedToEnglish(newStep.PressureSetupSpeed);
+            newStep.TemperatureSetupMode = ConvertTemperatureModeToEnglish(newStep.TemperatureSetupMode);
+
+            if (ProgramService.SaveProgramStep(newStep))
+            {
+                // Для корректного отображения в UI можно сразу добавить новый этап в коллекцию
+                // Если вы хотите, чтобы в DataGrid отображались русские значения, преобразуем их обратно:
+                newStep.PressureSetupSpeed = ConvertPressureSpeedToRussian(newStep.PressureSetupSpeed);
+                newStep.TemperatureSetupMode = ConvertTemperatureModeToRussian(newStep.TemperatureSetupMode);
+
+                _stepsCollection.Add(newStep);
+                StepsDataGrid.Items.Refresh();
+                MessageQueue.Enqueue("Этап добавлен и сохранен автоматически");
+            }
+            else
+            {
+                MessageQueue.Enqueue("Ошибка добавления этапа");
+            }
+        }
+
+        private void SaveAllStepsButton_Click(object sender, RoutedEventArgs e)
+        {
+            bool allSuccess = true;
+
+            foreach (var step in _stepsCollection)
+            {
+                if (step.IsModified)
+                {
+                    if (step.ProgramStepId == 0)
+                    {
+                        if (step.PointNumber == 0 && SensorTypesComboBox.SelectedItem is Program selectedProgram)
+                        {
+                            step.PointNumber = ProgramService.GetNextPointNumber(selectedProgram.ProgramId);
+                            step.ProgramId = selectedProgram.ProgramId;
+                            step.PressureSetupSpeed = ConvertPressureSpeedToEnglish(step.PressureSetupSpeed);
+                            step.TemperatureSetupMode = ConvertTemperatureModeToEnglish(step.TemperatureSetupMode);
+                        }
+
+                        if (!ProgramService.SaveProgramStep(step))
+                        {
+                            allSuccess = false;
+                        }
+                        else
+                        {
+                            step.PressureSetupSpeed = ConvertPressureSpeedToRussian(step.PressureSetupSpeed);
+                            step.TemperatureSetupMode = ConvertTemperatureModeToRussian(step.TemperatureSetupMode);
+                            step.IsModified = false;
+
+                            if (DataContext is TechnicalWindowViewModel viewModel)
+                            {
+                                viewModel.StoreOriginalStep(step);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        step.PressureSetupSpeed = ConvertPressureSpeedToEnglish(step.PressureSetupSpeed);
+                        step.TemperatureSetupMode = ConvertTemperatureModeToEnglish(step.TemperatureSetupMode);
+
+                        if (!ProgramService.UpdateProgramStep(step))
+                        {
+                            allSuccess = false;
+                        }
+                        else
+                        {
+                            step.PressureSetupSpeed = ConvertPressureSpeedToRussian(step.PressureSetupSpeed);
+                            step.TemperatureSetupMode = ConvertTemperatureModeToRussian(step.TemperatureSetupMode);
+                            step.IsModified = false;
+                            if (DataContext is TechnicalWindowViewModel viewModel)
+                            {
+                                viewModel.StoreOriginalStep(step);
+                            }
+                        }
+                    }
+                }
+            }
+
+            StepsDataGrid.Items.Refresh();
+
+            if (allSuccess)
+            {
+                MessageQueue.Enqueue("Все этапы успешно сохранены");
+            }
+            else
+            {
+                MessageQueue.Enqueue("Ошибка сохранения одного или нескольких этапов");
+            }
+        }
+
+        // Обновляем список шагов для выбранной программы
+        private void UpdateStepList(int programId)
+        {
+            // раньше было getStepProgram(), теперь — GetProgramSteps()
+            var stepsFromDb = ProgramService.GetProgramSteps(programId);
+
+            // Преобразуем значения в русский формат
+            foreach (var step in stepsFromDb)
+            {
+                step.PressureSetupSpeed = ConvertPressureSpeedToRussian(step.PressureSetupSpeed);
+                step.TemperatureSetupMode = ConvertTemperatureModeToRussian(step.TemperatureSetupMode);
+            }
+
+            _stepsCollection = new ObservableCollection<ProgramStep>(
+                stepsFromDb.OrderBy(s => s.PointNumber)
+            );
+
+            StepsDataGrid.ItemsSource = _stepsCollection;
+            StepsDataGrid.Items.Refresh();
+
+            if (DataContext is TechnicalWindowViewModel viewModel)
+            {
+                foreach (var step in _stepsCollection)
+                    viewModel.StoreOriginalStep(step);
+            }
+        }
+
+
+        // Обработчик нажатия кнопки сброса – очищает все поля и сбрасывает выбор
+        private void ResetProgramFieldsButton_Click(object sender, RoutedEventArgs e)
+        {
+            ResetFields();
+            MessageQueue.Enqueue("Поля сброшены");
+        }
+
+        // Вспомогательные методы для преобразования ввода из TextBox
+        private double GetDoubleFromTextBox(TextBox textBox)
+        {
+            return double.TryParse(textBox.Text, out double value) ? value : 0;
+        }
+
+        private int GetIntFromTextBox(TextBox textBox)
+        {
+            return int.TryParse(textBox.Text, out int value) ? value : 0;
+        }
+
+        private void StepsDataGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            // Если требуется – обработка выбора шага для редактирования
+        }
+
+        private void StepsDataGrid_CellEditEnding(object sender, DataGridCellEditEndingEventArgs e)
+        {
+            if (e.Row.Item is ProgramStep step)
+            {
+                /*if (e.EditingElement is TextBox textBox)
+                {
+                    var binding = textBox.GetBindingExpression(TextBox.TextProperty);
+                    binding?.UpdateSource();
+                }*/
+
+                if (e.EditingElement is ComboBox comboBox)
+                {
+                    var binding = comboBox.GetBindingExpression(ComboBox.SelectedItemProperty);
+                    binding.UpdateSource();
+                }
+
+                Dispatcher.BeginInvoke(new Action(() => 
+                {
+                    if (DataContext is TechnicalWindowViewModel viewModel)
+                    {
+                        step.IsModified = viewModel.HasStepChanged(step);
+                    }
+                }));
+
+                
+
+                //step.IsModified = true; // [NotMapped] public bool IsModified { get; set; } = false;
+            }
+        }
+
+
+        private void ComboBoxColumn_LostFocus(object sender, RoutedEventArgs e)
+        {
+            StepsDataGrid.CommitEdit(DataGridEditingUnit.Cell, true);
+            StepsDataGrid.CommitEdit(DataGridEditingUnit.Row, true);
+        }
+
+        private void ComboBoxColumn_DropDownClosed(object sender, EventArgs e)
+        {
+            StepsDataGrid.CommitEdit(DataGridEditingUnit.Cell, true);
+            StepsDataGrid.CommitEdit(DataGridEditingUnit.Row, true);
+
+            /*if (sender is ComboBox comboBox)
+            {
+                DataGridRow row = DataGridRow.GetRowContainingElement(comboBox);
+                if (row != null)
+                {
+                    DataGrid dataGrid = FindVisualParent<DataGrid>(row);
+                    if (dataGrid != null)
+                    {
+                        dataGrid.CommitEdit(DataGridEditingUnit.Cell, true);
+                        dataGrid.CommitEdit(DataGridEditingUnit.Row, true);
+                    }
+                }
+            }*/
+        }
+
+        private void ComboBoxColumn_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (sender is ComboBox comboBox)
+            {
+                DataGridRow row = DataGridRow.GetRowContainingElement(comboBox);
+                if (row != null)
+                {
+                    DataGrid dataGrid = FindVisualParent<DataGrid>(row);
+                    if (dataGrid != null)
+                    {
+                        dataGrid.CommitEdit(DataGridEditingUnit.Cell, true);
+                        dataGrid.CommitEdit(DataGridEditingUnit.Row, true);
+                    }
+                }
+            }
+        }
+
+        private static T FindVisualParent<T>(DependencyObject child) where T : DependencyObject
+        {
+            DependencyObject parentObject = VisualTreeHelper.GetParent(child);
+            if (parentObject == null) return null;
+            if (parentObject is T parent) return parent;
+            return FindVisualParent<T>(parentObject);
+        }
+
+        // Удаление шага из DataGrid
+        private void DeleteStepButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button btn && btn.DataContext is ProgramStep step)
+            {
+                if (ProgramService.DeleteProgramStep(step))
+                {
+                    MessageQueue.Enqueue("Этап удалён");
+                    if (SensorTypesComboBox.SelectedItem is Program selectedProgram)
+                    {
+                        UpdateStepList(selectedProgram.ProgramId);
+                    }
+                }
+                else
+                {
+                    MessageQueue.Enqueue("Ошибка удаления шага");
+                }
+            }
+        }
+
+     
