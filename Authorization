@@ -1,0 +1,191 @@
+Authorization
+
+    public partial class Authorizathion : Window, IGetData
+    {
+        public SnackbarMessageQueue MessageQueue { get; set; }
+
+        private readonly string SettingsFileNameScanner;
+
+        private DispatcherTimer _checkScannerTimer;
+
+        private bool isScannerInit = false;
+
+        public Authorizathion()
+        {
+            InitializeComponent();
+
+            SettingsFileNameScanner = GetSecureDataHelper.GetUserSettingsFileScanner();
+
+            MessageQueue = new SnackbarMessageQueue(TimeSpan.FromMilliseconds(1000));
+
+            _checkScannerTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(1000)
+            };
+            _checkScannerTimer.Tick += _checkConnectScanner;
+            _checkScannerTimer.Start();
+
+            UsernameTextBox.Focus();
+
+        }
+
+        private void DeviceChanged(object sender, EventArrivedEventArgs e)
+        {
+            isScannerInit = false;
+            _checkConnectScanner(sender, e);
+        }
+
+       
+        async void IGetData.DataScanned(string value)
+        {
+            using (Htwp3DbContext context = new Htwp3DbContext())
+            {
+                User user = await context.Users.Where(u => u.Password == value).FirstOrDefaultAsync();
+
+                if (user != null)
+                {
+                    if (user.IsBlocked == true)
+                    {
+                        MessageQueue.Enqueue("Ваш аккаунт заблокирован.");
+                        return;
+                    }
+                    string fullname = $"{user.Name} {user.Patronymic}";
+                    Dispatcher.Invoke(() =>
+                    {
+                        Window nextWindow = user.RoleId switch
+                        {
+                            //1 => new OperatorWindow(user),
+                           1 => new OperatorWindow(),
+                            2 => new TechnicalWindow(fullname),
+                            //2 => new TechnicalWindow(),
+                            _ => throw new NotImplementedException()
+                        };
+
+                        this.Close();
+                        nextWindow.Show();
+                    });
+                }
+                else
+                {
+                    MessageBox.Show("Пользователь не найден!", "Ошибка");
+                }
+            }
+        }
+
+
+        // Кнопка войти
+        private void ButtonEnter(object sender, RoutedEventArgs e)
+        {
+            string username = UsernameTextBox.Text;
+            string password = PasswordBox.Password;
+
+            if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+            {
+                MessageQueue.Enqueue("Введите логин и пароль!");
+                return;
+            }
+
+
+
+            var (authenticated, role, isBlocked) = AuthentificateUser(username, password);
+
+            if (isBlocked)
+            {
+                MessageQueue.Enqueue("Ваш аккаунт заблокирован.");
+                return;
+            }
+
+            if (authenticated)
+            {
+
+                using (var context = new Htwp3DbContext())
+                {
+                    var user = context.Users.FirstOrDefault(u => u.Username == username);
+
+                    string fullname = $"{user.Name} {user.Patronymic}";
+
+
+
+
+                    Window nextWindow = role switch
+                    {
+                        //1 => new OperatorWindow(user),
+                         1 => new OperatorWindow(),
+                        // 2 => new TechnicalWindow(),
+                        2 => new TechnicalWindow(fullname),
+
+                        _ => throw new NotImplementedException()
+                    };
+
+                    this.Close();
+                    nextWindow.Show();
+                }
+            }
+            else
+            {
+                MessageQueue.Enqueue("Неверный логин или пароль!");
+            }
+        }
+
+
+        private void CloseButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.Close();
+        }
+
+        // Метод для проверки пользователя и получения роли
+        public (bool authenticated, int? role, bool isBlocked) AuthentificateUser(string username, string enteredPassword)
+        {
+            using (var context = new Htwp3DbContext())
+            {
+                var user = context.Users.FirstOrDefault(u => u.Username == username);
+
+                if (user != null)
+                {
+                    // Проверяем, заблокирован ли пользователь
+                    if ((bool)user.IsBlocked)
+                    {
+                        return (false, null, true); // Возвращаем, что пользователь заблокирован
+                    }
+
+                    string storedPasswordHash = user.Password;
+                    string storedSalt = user.Salt;
+
+                    string enteredPasswordHash = PasswordHasher.HashPassword(enteredPassword, storedSalt);
+
+                    if (storedPasswordHash == enteredPasswordHash)
+                    {
+                        return (true, user.RoleId, false); // Пользователь прошел аутентификацию и не заблокирован
+                    }
+                }
+            }
+
+            return (false, null, false); // Пользователь не прошел аутентификацию
+        }
+
+
+
+        private void TitleBar_MouseDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton == MouseButton.Left)
+            {
+                try
+                {
+                    this.DragMove();
+                }
+                catch (InvalidOperationException)       
+                {
+                    return;
+                }
+            }
+            }
+
+        private void MinimizeButton_Click(object sender, RoutedEventArgs e)
+        {
+            this.WindowState = WindowState.Minimized;
+        }
+    }
+}
+
+
+
